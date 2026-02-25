@@ -90,30 +90,43 @@ stages:
             inputs:
               buildType: 'current'
               artifactName: spfx-package
-              downloadPath: '$(Pipeline.Workspace)/spfx-package'
+              downloadPath: '$(Pipeline.Workspace)'
+              
+          - task: AzureCLI@2
+            displayName: Deploy SPFx package (WIF)
+            inputs:
+              azureSubscription: 'deploy-pipeline-kv'
+              scriptType: pscore
+              scriptLocation: inlineScript
+              inlineScript: |
+                Install-Module PnP.PowerShell -Force -Scope CurrentUser
 
-          # - task: AzureKeyVault@2
-          #   inputs:
-          #     azureSubscription: 'MyServiceConnection'
-          #     KeyVaultName: 'Prod-SPFx-KV'
-          #     SecretsFilter: '*'
-          #     RunAsPreJob: true
+                # Get SharePoint access token using WIF identity
+                $token = az account get-access-token `
+                  --resource "https://$(APP_CATALOG_TENANT).sharepoint.com" `
+                  --query accessToken -o tsv
 
-          # - task: PowerShell@2
-          #   displayName: Deploy SPFx package to App Catalog
-          #   inputs:
-          #     pwsh: true
-          #     targetType: inline
-          #     script: |
-          #       Install-Module PnP.PowerShell -Force -Scope CurrentUser
+                # Connect to SharePoint using the token
+                Connect-PnPOnline `
+                  -Url "$(APP_CATALOG_URL)" `
+                  -AccessToken $token
 
-          #       Connect-PnPOnline `
-          #         -Url $(APP_CATALOG_URL) `
-          #         -Tenant $(TENANT_ID) `
-          #         -ClientId $(CLIENT_ID) `
-          #         -CertificatePath $(CERT_PATH)
+                # Resolve the .sppkg file path 
+                $sppkgFile = Get-ChildItem "$(Pipeline.Workspace)/spfx-package/" -Filter "*.sppkg" | Select-Object -First 1
 
-          #       Add-PnPApp `
-          #         -Path "$(Pipeline.Workspace)/spfx-package/*.sppkg" `
-          #         -Overwrite `
-          #         -Publish
+                if (-not $sppkgFile) {
+                  Write-Error "No .sppkg file found in $(Pipeline.Workspace)/spfx-package/"
+                  exit 1
+                }
+
+                Write-Host "Deploying: $($sppkgFile.FullName)"
+
+                $ConfirmPreference = 'None'
+
+                # TODO: See if Scope Site can work
+                Add-PnPApp `
+                  -Path $sppkgFile.FullName `
+                  -Scope Tenant `
+                  -Overwrite `
+                  -Publish `
+                  -Force
